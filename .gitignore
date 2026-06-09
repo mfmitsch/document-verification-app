@@ -1,4 +1,3 @@
-Plaintext
 # Ignore the python virtual environment
 venv/
 .venv/

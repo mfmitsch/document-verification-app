@@ -59,14 +59,19 @@ def require_auth() -> None:
     st.stop()
 
 
+class ExtractedField(BaseModel):
+    field_name: str = Field(description="The name of the requested field to extract.")
+    value: Optional[str] = Field(description="The value extracted from the document for this field.")
+
+
 class UnderwritingExtraction(BaseModel):
     is_valid_proof_of_address: bool = Field(description="True if the document is an official utility bill, bank statement, or government mail.")
     document_type: str = Field(description="The specific type of document, e.g., 'Electric Bill', 'Bank Statement', 'Driver License', 'Invalid'.")
     extracted_name: Optional[str] = Field(description="The primary full name found on the document.")
     extracted_address: Optional[str] = Field(description="The complete mailing address found on the document.")
-    additional_fields: Optional[dict[str, str]] = Field(
+    additional_fields: Optional[list[ExtractedField]] = Field(
         default=None,
-        description="Map of additionally requested field names to values extracted from the document.",
+        description="Additional requested fields extracted from the document.",
     )
     confidence_score: float = Field(description="Confidence from 0.0 to 1.0 based on document legibility.")
     reasoning: str = Field(description="Brief 1-sentence explanation of the document classification or validity.")
@@ -88,7 +93,7 @@ def build_full_prompt(base_prompt: str, custom_checks: list[dict[str, str]]) -> 
         field_names = ", ".join(f'"{c["field"]}"' for c in custom_checks)
         prompt += (
             f"\n\nAlso extract these additional fields and return them in additional_fields "
-            f"using these exact keys: {field_names}."
+            f"as a list of objects with field_name and value for: {field_names}."
         )
     return prompt
 
@@ -140,11 +145,30 @@ def evaluate_core_checks(
     ]
 
 
+def normalize_additional_fields(raw: list | dict | None) -> dict[str, str]:
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return {str(key): str(value) for key, value in raw.items() if value is not None}
+
+    normalized: dict[str, str] = {}
+    for item in raw:
+        if isinstance(item, dict):
+            name = item.get("field_name") or item.get("name")
+            value = item.get("value")
+        else:
+            name = getattr(item, "field_name", None)
+            value = getattr(item, "value", None)
+        if name:
+            normalized[str(name)] = value or ""
+    return normalized
+
+
 def evaluate_custom_checks(
     custom_checks: list[dict[str, str]],
-    additional_fields: dict[str, str] | None,
+    additional_fields: list | dict | None,
 ) -> list[dict[str, str | bool | None]]:
-    extracted = additional_fields or {}
+    extracted = normalize_additional_fields(additional_fields)
     normalized = {key.lower(): value for key, value in extracted.items()}
     results = []
 

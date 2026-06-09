@@ -1,4 +1,5 @@
 import json
+import uuid
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -27,10 +28,8 @@ if "user_prompt" not in st.session_state:
     st.session_state.user_prompt = DEFAULT_PROMPT
 if "show_prompt_editor" not in st.session_state:
     st.session_state.show_prompt_editor = False
-if "custom_checks_df" not in st.session_state:
-    st.session_state.custom_checks_df = pd.DataFrame(
-        {"Field": pd.Series(dtype="str"), "Expected Value": pd.Series(dtype="str")}
-    )
+if "custom_check_row_ids" not in st.session_state:
+    st.session_state.custom_check_row_ids = []
 
 
 def require_auth() -> None:
@@ -77,11 +76,77 @@ class UnderwritingExtraction(BaseModel):
     reasoning: str = Field(description="Brief 1-sentence explanation of the document classification or validity.")
 
 
-def parse_custom_checks(df: pd.DataFrame) -> list[dict[str, str]]:
+def add_custom_check_row() -> None:
+    st.session_state.custom_check_row_ids.append(uuid.uuid4().hex)
+
+
+def remove_custom_check_row(row_id: str) -> None:
+    st.session_state.custom_check_row_ids = [
+        rid for rid in st.session_state.custom_check_row_ids if rid != row_id
+    ]
+    st.session_state.pop(f"custom_field_{row_id}", None)
+    st.session_state.pop(f"custom_expected_{row_id}", None)
+
+
+def render_custom_checks_sidebar() -> list[dict[str, str]]:
+    st.markdown(
+        """
+        <style>
+        section[data-testid="stSidebar"] [data-testid="column"]
+        div[data-testid="stVerticalBlock"]:has(button[kind="tertiary"]) {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 2.75rem;
+        }
+        section[data-testid="stSidebar"] button[kind="tertiary"] {
+            border: none !important;
+            box-shadow: none !important;
+            background: transparent !important;
+            padding: 0.25rem !important;
+        }
+        section[data-testid="stSidebar"] button[kind="tertiary"]:hover {
+            background: rgba(128, 128, 128, 0.15) !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if st.button("➕", help="Add verification rule", key="add_custom_check"):
+        add_custom_check_row()
+        st.rerun()
+
+    for row_id in st.session_state.custom_check_row_ids:
+        field_col, expected_col, delete_col = st.columns([5, 5, 1])
+        with field_col:
+            st.text_input(
+                "Field",
+                placeholder="Field name, e.g. Policy Number",
+                key=f"custom_field_{row_id}",
+                label_visibility="collapsed",
+            )
+        with expected_col:
+            st.text_input(
+                "Expected value",
+                placeholder="Expected value",
+                key=f"custom_expected_{row_id}",
+                label_visibility="collapsed",
+            )
+        with delete_col:
+            st.button(
+                "🗑️",
+                key=f"delete_custom_{row_id}",
+                help="Remove rule",
+                type="tertiary",
+                on_click=remove_custom_check_row,
+                args=(row_id,),
+            )
+
     checks = []
-    for _, row in df.iterrows():
-        field = str(row.get("Field", "")).strip()
-        expected = str(row.get("Expected Value", "")).strip()
+    for row_id in st.session_state.custom_check_row_ids:
+        field = st.session_state.get(f"custom_field_{row_id}", "").strip()
+        expected = st.session_state.get(f"custom_expected_{row_id}", "").strip()
         if field and expected:
             checks.append({"field": field, "expected": expected})
     return checks
@@ -201,12 +266,17 @@ def determine_status(
 
     if not doc_type_valid:
         return "❌ REJECTED: INVALID DOC", st.error
+
+    failed_labels = []
     if failed_core:
-        fields = " & ".join(str(f).upper() for f in failed_core)
-        return f"⚠️ FLAGGED: {fields} MISMATCH", st.warning
+        failed_labels.extend(str(f) for f in failed_core)
     if failed_custom:
-        fields = ", ".join(str(f) for f in failed_custom)
-        return f"⚠️ FLAGGED: CHECK FAILED ({fields})", st.warning
+        failed_labels.extend(str(f) for f in failed_custom)
+
+    if failed_labels:
+        fields = ", ".join(failed_labels)
+        return f"⚠️ FLAGGED: {fields}", st.warning
+
     return "✅ APPROVED", st.success
 
 
@@ -222,18 +292,8 @@ expected_address = st.sidebar.text_input("Expected Risk Address", "123 Main St, 
 
 st.sidebar.markdown("### ➕ Additional Verification Rules")
 st.sidebar.caption("Optional checks beyond name and address.")
-custom_checks_df = st.sidebar.data_editor(
-    st.session_state.custom_checks_df,
-    num_rows="dynamic",
-    use_container_width=True,
-    column_config={
-        "Field": st.column_config.TextColumn("Field", help="Label to extract from the document, e.g. Policy Number"),
-        "Expected Value": st.column_config.TextColumn("Expected Value", help="Value to match against the extraction"),
-    },
-    hide_index=True,
-)
-st.session_state.custom_checks_df = custom_checks_df
-custom_checks = parse_custom_checks(custom_checks_df)
+with st.sidebar:
+    custom_checks = render_custom_checks_sidebar()
 
 remaining_scans = MAX_SCANS_PER_SESSION - st.session_state.scan_count
 st.sidebar.caption(f"Scans remaining this session: {max(remaining_scans, 0)} / {MAX_SCANS_PER_SESSION}")
